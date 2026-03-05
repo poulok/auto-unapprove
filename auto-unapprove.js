@@ -382,6 +382,18 @@ async function smartDismissReviews() {
       );
     }
 
+    // Step 10: Handle revoked hall passes
+    const revokedHallPasses = getRevokedHallPasses(prComments, hallPassGranters);
+    if (revokedHallPasses.length > 0) {
+      console.log(`\n🚫 REVOKED HALL PASSES:`);
+      for (const reviewer of revokedHallPasses) {
+        console.log(`   @${reviewer} — hall pass revoked`);
+        if (!dryRun) {
+          await postHallPassRevocation(reviewer, prComments, headers);
+        }
+      }
+    }
+
     console.log(`\n🎉 Analysis complete!`);
   } catch (error) {
     console.error("❌ Error:", error.message);
@@ -650,6 +662,50 @@ function isUserCodeownerForFiles(username, fileOwnersMap, userTeamMemberships) {
     ownedFiles: [...new Set(ownedFiles)],
     viaTeams: Array.from(viaTeams),
   };
+}
+
+function getRevokedHallPasses(comments, activeGranters) {
+  const confirmed = new Set();
+  const markerRegex = /<!-- hall-pass-confirmed:(\S+?) -->/g;
+  for (const comment of comments) {
+    if (comment.body) {
+      let match;
+      while ((match = markerRegex.exec(comment.body)) !== null) {
+        confirmed.add(match[1]);
+      }
+    }
+  }
+  return Array.from(confirmed).filter((reviewer) => !activeGranters.has(reviewer));
+}
+
+async function postHallPassRevocation(reviewer, prComments, headers) {
+  const marker = `<!-- hall-pass-revoked:${reviewer} -->`;
+  const alreadyPosted = prComments.some((c) => c.body && c.body.includes(marker));
+  if (alreadyPosted) {
+    console.log(`     ℹ️  Hall pass revocation already posted for @${reviewer}`);
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          body: `🚫 Hall pass for @${reviewer} has been revoked — their approval will now be dismissed on subsequent pushes to their owned files.\n\n${marker}`,
+        }),
+      },
+    );
+
+    if (response.ok) {
+      console.log(`     ✅ Hall pass revocation posted for @${reviewer}`);
+    } else {
+      console.log(`     ❌ Failed to post hall pass revocation: ${response.status}`);
+    }
+  } catch (error) {
+    console.log(`     ❌ Error posting hall pass revocation: ${error.message}`);
+  }
 }
 
 function getHallPassGranters(comments, token) {
