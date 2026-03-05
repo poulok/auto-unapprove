@@ -105,7 +105,7 @@ async function smartDismissReviews() {
     const reviews = await getAllReviews(headers);
     const commits = await getAllCommits(headers);
     const prComments = await getAllPRComments(headers);
-    const hallPassGranters = getHallPassGranters(prComments, hallPassToken);
+    const hallPassGranters = getHallPassGranters([...prComments, ...reviews], hallPassToken);
     if (hallPassGranters.size > 0) {
       console.log(`🎫 Hall passes active from: ${Array.from(hallPassGranters).join(", ")}`);
     }
