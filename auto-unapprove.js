@@ -28,6 +28,7 @@ const prNumber = process.env.PR_NUMBER;
 const dryRun = process.env.DRY_RUN !== "false";
 const codeownersFile = process.env.CODEOWNERS_FILE || "CODEOWNERS";
 const targetBranch = process.env.TARGET_BRANCH || "main";
+const hallPassToken = process.env.HALL_PASS_TOKEN || "/hall-pass";
 
 async function smartDismissReviews() {
   try {
@@ -99,10 +100,15 @@ async function smartDismissReviews() {
       ),
     ]);
 
-    // Get all reviews and commits with pagination
-    console.log(`📋 Fetching all reviews and commits...`);
+    // Get all reviews, commits, and comments with pagination
+    console.log(`📋 Fetching all reviews, commits, and comments...`);
     const reviews = await getAllReviews(headers);
     const commits = await getAllCommits(headers);
+    const prComments = await getAllPRComments(headers);
+    const hallPassGranters = getHallPassGranters(prComments, hallPassToken);
+    if (hallPassGranters.size > 0) {
+      console.log(`🎫 Hall passes active from: ${Array.from(hallPassGranters).join(", ")}`);
+    }
     const approvedReviews = reviews.filter(
       (review) => review.state === "APPROVED",
     );
@@ -264,34 +270,42 @@ async function smartDismissReviews() {
 
       // Dismissal logic: code owner who authored commits OR has stale approval
       if (isCodeowner && (isCommitAuthor || hasStaleApproval)) {
-        const reviewIds = reviewerApprovals.map((r) => r.id);
+        if (hallPassGranters.has(reviewer)) {
+          console.log(`   🎫 HALL PASS @${reviewer} - dismissal skipped`);
+          console.log(`      Reviewer granted a hall pass via comment "${hallPassToken}"`);
+          if (!dryRun) {
+            await postHallPassConfirmation(reviewer, prComments, headers);
+          }
+        } else {
+          const reviewIds = reviewerApprovals.map((r) => r.id);
 
-        dismissalTargets.push({
-          reviewer,
-          ownedFiles,
-          viaTeams,
-          reviewIds,
-          reason: isCommitAuthor
-            ? "Code owner who authored changes"
-            : staleReason,
-          latestCommit:
-            commitsAfterApproval.length > 0
-              ? commitsAfterApproval[commitsAfterApproval.length - 1]
-              : null,
-          affectedFilesCount: hasStaleApproval
-            ? [...new Set(affectedOwnedFiles)].length
-            : 0,
-        });
-        console.log(`   `);
-        console.log(`   🚫 DISMISS @${reviewer}`);
-        console.log(`      📁 Files: ${ownedFiles.join(", ")}`);
-        console.log(
-          `      👑 Owner Via: ${viaTeams.join(", ") || "Direct ownership"}`,
-        );
-        console.log(`      🔢 Reviews: ${reviewIds.length}`);
-        console.log(
-          `      💡 Reason: ${isCommitAuthor ? "Code owner who authored changes" : staleReason}`,
-        );
+          dismissalTargets.push({
+            reviewer,
+            ownedFiles,
+            viaTeams,
+            reviewIds,
+            reason: isCommitAuthor
+              ? "Code owner who authored changes"
+              : staleReason,
+            latestCommit:
+              commitsAfterApproval.length > 0
+                ? commitsAfterApproval[commitsAfterApproval.length - 1]
+                : null,
+            affectedFilesCount: hasStaleApproval
+              ? [...new Set(affectedOwnedFiles)].length
+              : 0,
+          });
+          console.log(`   `);
+          console.log(`   🚫 DISMISS @${reviewer}`);
+          console.log(`      📁 Files: ${ownedFiles.join(", ")}`);
+          console.log(
+            `      👑 Owner Via: ${viaTeams.join(", ") || "Direct ownership"}`,
+          );
+          console.log(`      🔢 Reviews: ${reviewIds.length}`);
+          console.log(
+            `      💡 Reason: ${isCommitAuthor ? "Code owner who authored changes" : staleReason}`,
+          );
+        }
       } else {
         console.log(`   ✅ KEEP @${reviewer}`);
         if (viaTeams.length > 0) {
@@ -309,6 +323,7 @@ async function smartDismissReviews() {
     console.log(`\n📊 EXECUTION PLAN:`);
     console.log(`   • Changed files: ${changedFiles.length}`);
     console.log(`   • Total approvals: ${approvedReviews.length}`);
+    console.log(`   • Hall passes active: ${hallPassGranters.size}`);
     console.log(`   • Dismissals needed: ${dismissalTargets.length}`);
     console.log(
       `   • Approvals preserved: ${approvedReviews.length - dismissalTargets.length}`,
@@ -474,6 +489,38 @@ async function getAllCommits(headers) {
   return allCommits;
 }
 
+async function getAllPRComments(headers) {
+  const allComments = [];
+  let page = 1;
+  const perPage = 100;
+
+  while (true) {
+    const url = `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments?page=${page}&per_page=${perPage}`;
+    console.log(`   💬 Fetching comments page ${page}...`);
+
+    const response = await fetch(url, { headers });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch PR comments page ${page}: ${response.status}`);
+    }
+
+    const comments = await response.json();
+    if (comments.length === 0) {
+      break;
+    }
+
+    allComments.push(...comments);
+    console.log(`   💬 Comments page ${page}: ${comments.length} comments`);
+
+    if (comments.length < perPage) {
+      break;
+    }
+
+    page++;
+  }
+
+  return allComments;
+}
+
 function parseCodeowners(content) {
   const lines = content.split("\n");
   const owners = [];
@@ -605,14 +652,56 @@ function isUserCodeownerForFiles(username, fileOwnersMap, userTeamMemberships) {
   };
 }
 
+function getHallPassGranters(comments, token) {
+  const granters = new Set();
+  for (const comment of comments) {
+    if (comment.body && comment.body.includes(token)) {
+      granters.add(comment.user.login);
+    }
+  }
+  return granters;
+}
+
+async function postHallPassConfirmation(reviewer, prComments, headers) {
+  const marker = `<!-- hall-pass-confirmed:${reviewer} -->`;
+  const alreadyPosted = prComments.some((c) => c.body && c.body.includes(marker));
+  if (alreadyPosted) {
+    console.log(`     ℹ️  Hall pass confirmation already posted for @${reviewer}`);
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          body: `🎫 Hall pass granted by @${reviewer} — further changes to their owned files will not require re-approval before merge.\n\n${marker}`,
+        }),
+      },
+    );
+
+    if (response.ok) {
+      console.log(`     ✅ Hall pass confirmation posted for @${reviewer}`);
+    } else {
+      console.log(`     ❌ Failed to post hall pass confirmation: ${response.status}`);
+    }
+  } catch (error) {
+    console.log(`     ❌ Error posting hall pass confirmation: ${error.message}`);
+  }
+}
+
 // Run if called directly
 if (require.main === module) {
   smartDismissReviews();
 }
 
-module.exports = { 
+module.exports = {
   smartDismissReviews,
   getAllChangedFiles,
   getAllReviews,
-  getAllCommits
+  getAllCommits,
+  getAllPRComments,
+  getHallPassGranters,
 };

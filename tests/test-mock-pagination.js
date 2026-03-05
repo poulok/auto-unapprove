@@ -54,7 +54,7 @@ global.fetch = async (url) => {
   } else if (url.includes('/commits')) {
     const pageMatch = url.match(/page=(\d+)/);
     const page = pageMatch ? parseInt(pageMatch[1]) : 1;
-    
+
     let commits = [];
     if (page === 1) {
       commits = [
@@ -64,10 +64,29 @@ global.fetch = async (url) => {
     } else {
       commits = [];
     }
-    
+
     return {
       ok: true,
       json: async () => commits
+    };
+  } else if (url.includes('/issues/') && url.includes('/comments')) {
+    const pageMatch = url.match(/page=(\d+)/);
+    const page = pageMatch ? parseInt(pageMatch[1]) : 1;
+
+    let comments = [];
+    if (page === 1) {
+      comments = [
+        { id: 1, user: { login: 'user1' }, body: 'Looks good! /hall-pass' },
+        { id: 2, user: { login: 'user2' }, body: 'Some other comment' },
+        { id: 3, user: { login: 'user3' }, body: '/hall-pass' }
+      ];
+    } else {
+      comments = [];
+    }
+
+    return {
+      ok: true,
+      json: async () => comments
     };
   }
   
@@ -78,7 +97,7 @@ global.fetch = async (url) => {
 };
 
 // Import the functions from the main script
-const { getAllChangedFiles, getAllReviews, getAllCommits } = require('../auto-unapprove.js');
+const { getAllChangedFiles, getAllReviews, getAllCommits, getAllPRComments, getHallPassGranters } = require('../auto-unapprove.js');
 
 async function runMockTests() {
   console.log("🧪 MOCK PAGINATION TESTS");
@@ -110,7 +129,35 @@ async function runMockTests() {
     console.log(`   ✅ Retrieved ${commits.length} commits`);
     console.log(`   👤 Authors: ${commits.map(c => c.author.login).join(', ')}`);
     console.log("");
-    
+
+    console.log("💬 Testing getAllPRComments...");
+    const prComments = await getAllPRComments(headers);
+    console.log(`   ✅ Retrieved ${prComments.length} comments`);
+    console.log(`   💬 Commenters: ${prComments.map(c => c.user.login).join(', ')}`);
+    console.log("");
+
+    console.log("🎫 Testing getHallPassGranters...");
+    // user1 commented with /hall-pass, user2 did not, user3 did
+    const granters = getHallPassGranters(prComments, "/hall-pass");
+    console.log(`   ✅ Hall pass granters: ${Array.from(granters).join(', ')}`);
+    const user1HasPass = granters.has('user1');
+    const user2HasPass = granters.has('user2');
+    const user3HasPass = granters.has('user3');
+    if (!user1HasPass) throw new Error("user1 should have hall pass (comment contains /hall-pass)");
+    if (user2HasPass) throw new Error("user2 should NOT have hall pass (comment lacks /hall-pass)");
+    if (!user3HasPass) throw new Error("user3 should have hall pass (comment is exactly /hall-pass)");
+
+    // Test with no comments
+    const emptyGranters = getHallPassGranters([], "/hall-pass");
+    if (emptyGranters.size !== 0) throw new Error("Empty comments should yield empty granters set");
+
+    // Test with custom token
+    const customGranters = getHallPassGranters(prComments, "/approve-changes");
+    if (customGranters.size !== 0) throw new Error("Custom token not present should yield empty granters set");
+
+    console.log(`   ✅ All hall pass assertions passed`);
+    console.log("");
+
     console.log("🎉 All mock tests passed!");
     console.log("");
     console.log("💡 This confirms the pagination logic works correctly.");

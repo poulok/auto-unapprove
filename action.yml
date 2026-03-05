@@ -28,6 +28,10 @@ inputs:
     description: "Team start with"
     required: false
     default: "@your-org/"
+  hall-pass-token:
+    description: "Comment text that activates a hall pass (reviewer's approval won't be dismissed after post-approval commits)"
+    required: false
+    default: "/hall-pass"
 
 runs:
   using: "composite"
@@ -42,4 +46,5 @@ runs:
         export TARGET_BRANCH="${{ inputs.target-branch }}"
         export GITHUB_REPOSITORY="${{ github.repository }}"
         export TEAM_START_WITH="${{ inputs.team-start-with }}"
+        export HALL_PASS_TOKEN="${{ inputs.hall-pass-token }}"
         node ${{ github.action_path }}/auto-unapprove.js
